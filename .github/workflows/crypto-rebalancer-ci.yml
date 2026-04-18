@@ -1,0 +1,56 @@
+name: crypto-rebalancer CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "crypto-rebalancer/**"
+      - ".github/workflows/crypto-rebalancer-ci.yml"
+  pull_request:
+    paths:
+      - "crypto-rebalancer/**"
+      - ".github/workflows/crypto-rebalancer-ci.yml"
+
+defaults:
+  run:
+    working-directory: crypto-rebalancer
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: crypto-rebalancer/pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: crypto-rebalancer
+          push: false
+          tags: crypto-rebalancer:ci

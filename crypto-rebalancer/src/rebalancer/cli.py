@@ -26,10 +26,13 @@ _CFG_OPT = typer.Option(
     help="Path to portfolio.yaml.",
 )
 _LOG_OPT = typer.Option("INFO", "--log-level", "-l", help="DEBUG/INFO/WARNING/ERROR.")
+_FMT_OPT = typer.Option(
+    "rich", "--log-format", "-f", help="Log output format: 'rich' (human) or 'json'."
+)
 
 
-def _build(cfg_path: Path, log_level: str):
-    setup_logging(log_level)
+def _build(cfg_path: Path, log_level: str, log_format: str = "rich"):
+    setup_logging(log_level, log_format)
     cfg = load_config(cfg_path)
     exchange = BinanceExchange(
         api_key=cfg.api_key or "",
@@ -41,23 +44,35 @@ def _build(cfg_path: Path, log_level: str):
 
 
 @app.command()
-def run(config: Path = _CFG_OPT, log_level: str = _LOG_OPT) -> None:
+def run(
+    config: Path = _CFG_OPT,
+    log_level: str = _LOG_OPT,
+    log_format: str = _FMT_OPT,
+) -> None:
     """Start the long-running scheduler loop."""
-    cfg, exchange, state_path = _build(config, log_level)
+    cfg, exchange, state_path = _build(config, log_level, log_format)
     run_forever(cfg, exchange, state_path)
 
 
 @app.command()
-def check(config: Path = _CFG_OPT, log_level: str = _LOG_OPT) -> None:
+def check(
+    config: Path = _CFG_OPT,
+    log_level: str = _LOG_OPT,
+    log_format: str = _FMT_OPT,
+) -> None:
     """Run a single tick in forced dry-run mode. Never places orders."""
-    cfg, exchange, state_path = _build(config, log_level)
+    cfg, exchange, state_path = _build(config, log_level, log_format)
     tick(cfg, exchange, state_path=state_path, force_dry_run=True)
 
 
 @app.command()
-def balances(config: Path = _CFG_OPT, log_level: str = _LOG_OPT) -> None:
+def balances(
+    config: Path = _CFG_OPT,
+    log_level: str = _LOG_OPT,
+    log_format: str = _FMT_OPT,
+) -> None:
     """Print free balances and their quote-currency value."""
-    cfg, exchange, _ = _build(config, log_level)
+    cfg, exchange, _ = _build(config, log_level, log_format)
     bals = exchange.get_balances()
 
     # Price every non-quote balance, not just the configured targets. Any

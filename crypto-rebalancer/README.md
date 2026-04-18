@@ -74,3 +74,11 @@ All commands accept `--config path/to/portfolio.yaml` (default: `./portfolio.yam
 pytest
 ruff check .
 ```
+
+## Deployment
+
+See [`deploy/README.md`](deploy/README.md) for Docker Compose and systemd
+instructions. Both run with `--log-format json` so logs are machine-parsable.
+
+CI runs `ruff` + `pytest` on Python 3.11 and 3.12 and builds the Docker
+image on every push/PR that touches `crypto-rebalancer/`.

@@ -1,0 +1,15 @@
+services:
+  rebalancer:
+    build: .
+    image: crypto-rebalancer:latest
+    container_name: crypto-rebalancer
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./portfolio.yaml:/data/portfolio.yaml:ro
+      - rebalancer-state:/data
+    command: ["run", "--config", "/data/portfolio.yaml", "--log-format", "json"]
+
+volumes:
+  rebalancer-state:

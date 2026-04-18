@@ -1,0 +1,40 @@
+[Unit]
+Description=Crypto portfolio rebalancer (Binance Spot)
+Documentation=https://github.com/hauychi/hdoujin-downloader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rebalancer
+Group=rebalancer
+WorkingDirectory=/opt/crypto-rebalancer
+EnvironmentFile=/etc/crypto-rebalancer/env
+ExecStart=/opt/crypto-rebalancer/.venv/bin/rebalancer run \
+    --config /etc/crypto-rebalancer/portfolio.yaml \
+    --log-format json
+Restart=on-failure
+RestartSec=10s
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/crypto-rebalancer
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+# State file lives here (path referenced by rebalancer_state.json)
+StateDirectory=crypto-rebalancer
+Environment=HOME=/var/lib/crypto-rebalancer
+
+[Install]
+WantedBy=multi-user.target

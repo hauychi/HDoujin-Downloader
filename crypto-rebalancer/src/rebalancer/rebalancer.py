@@ -17,24 +17,24 @@ from .exchange import BinanceExchange
 log = logging.getLogger(__name__)
 console = Console()
 
-STATE_FILE = Path("rebalancer_state.json")
+DEFAULT_STATE_FILENAME = "rebalancer_state.json"
 
 
-def _load_state() -> dict:
-    if not STATE_FILE.exists():
+def _load_state(path: Path) -> dict:
+    if not path.exists():
         return {}
     try:
-        return json.loads(STATE_FILE.read_text())
+        return json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        log.warning("could not read %s: %s", STATE_FILE, exc)
+        log.warning("could not read %s: %s", path, exc)
         return {}
 
 
-def _save_state(state: dict) -> None:
+def _save_state(path: Path, state: dict) -> None:
     try:
-        STATE_FILE.write_text(json.dumps(state, indent=2))
+        path.write_text(json.dumps(state, indent=2))
     except OSError as exc:
-        log.warning("could not write %s: %s", STATE_FILE, exc)
+        log.warning("could not write %s: %s", path, exc)
 
 
 def _print_drift_table(
@@ -61,6 +61,8 @@ def _print_drift_table(
 def tick(
     cfg: PortfolioConfig,
     exchange: BinanceExchange,
+    *,
+    state_path: Path,
     force_dry_run: bool = False,
 ) -> None:
     """Run a single drift check and rebalance if needed."""
@@ -84,7 +86,7 @@ def tick(
         log.info("no drift >= %.2f%%; skipping", cfg.drift_threshold * 100)
         return
 
-    state = _load_state()
+    state = _load_state(state_path)
     last = state.get("last_rebalance_ts", 0)
     gap = time.time() - last
     if gap < cfg.min_rebalance_interval_seconds:
@@ -112,15 +114,24 @@ def tick(
 
     log.info("%d trade(s) planned (dry_run=%s)", len(trades), dry_run)
     for t in trades:
-        log.info("  %s %s qty=%s notional=%.2f %s", t.side, t.pair, t.quantity, t.notional, cfg.quote)
+        log.info(
+            "  %s %s qty~=%s notional~=%.2f %s",
+            t.side, t.pair, t.quantity, t.notional, cfg.quote,
+        )
         if dry_run:
             continue
         try:
-            resp = exchange.place_market_order(t.pair, t.side, t.quantity)
+            resp = exchange.place_market_order(t)
             log.info("    filled: orderId=%s status=%s", resp.get("orderId"), resp.get("status"))
-        except Exception as exc:
-            log.exception("    order FAILED for %s: %s", t.pair, exc)
+        except Exception:
+            # A failed sell leaves the subsequent buys underfunded; bailing
+            # out prevents cascading InsufficientFunds errors and lets the
+            # user investigate before the next scheduled tick.
+            log.exception("    order FAILED for %s — aborting remaining trades", t.pair)
+            break
 
     if not dry_run:
+        # Always stamp the cooldown, even after a failure. Otherwise a broken
+        # configuration would cause us to hammer the API every tick.
         state["last_rebalance_ts"] = time.time()
-        _save_state(state)
+        _save_state(state_path, state)

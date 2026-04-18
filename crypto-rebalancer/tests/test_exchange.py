@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from rebalancer.exchange import BinanceExchange
+from rebalancer.portfolio import Trade
 
 
 @pytest.fixture
@@ -63,19 +64,36 @@ def test_get_symbol_filters_parses_filters(ex):
     assert f.min_notional == Decimal("10")
 
 
-def test_place_market_order_dispatches_buy(ex):
+def test_place_market_order_buy_uses_quote_order_qty(ex):
+    """Buys must use quoteOrderQty so Binance deducts fees from the quote side
+    (otherwise a sell's fee would leave the buy underfunded)."""
     ex.client.order_market_buy.return_value = {"orderId": 1, "status": "FILLED"}
-    resp = ex.place_market_order("BTCUSDT", "BUY", Decimal("0.01"))
-    ex.client.order_market_buy.assert_called_once_with(symbol="BTCUSDT", quantity="0.01")
+    trade = Trade(
+        symbol="ETH", pair="ETHUSDT", side="BUY",
+        quantity=Decimal("0.8"),  # informational estimate
+        notional=Decimal("2000"),  # authoritative for buy
+    )
+    resp = ex.place_market_order(trade)
+    ex.client.order_market_buy.assert_called_once_with(symbol="ETHUSDT", quoteOrderQty="2000")
+    ex.client.order_market_sell.assert_not_called()
     assert resp["status"] == "FILLED"
 
 
-def test_place_market_order_dispatches_sell(ex):
+def test_place_market_order_sell_uses_quantity(ex):
     ex.client.order_market_sell.return_value = {"orderId": 2, "status": "FILLED"}
-    ex.place_market_order("ETHUSDT", "SELL", Decimal("0.5"))
+    trade = Trade(
+        symbol="ETH", pair="ETHUSDT", side="SELL",
+        quantity=Decimal("0.5"), notional=Decimal("1250"),
+    )
+    ex.place_market_order(trade)
     ex.client.order_market_sell.assert_called_once_with(symbol="ETHUSDT", quantity="0.5")
+    ex.client.order_market_buy.assert_not_called()
 
 
 def test_place_market_order_rejects_bad_side(ex):
+    bad = Trade(
+        symbol="BTC", pair="BTCUSDT", side="HOLD",
+        quantity=Decimal("1"), notional=Decimal("50000"),
+    )
     with pytest.raises(ValueError, match="invalid side"):
-        ex.place_market_order("BTCUSDT", "HOLD", Decimal("1"))
+        ex.place_market_order(bad)

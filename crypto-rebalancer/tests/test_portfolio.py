@@ -78,10 +78,39 @@ def test_compute_trades_buys_and_sells():
     sell, buy = trades
     assert sell.pair == "BTCUSDT"
     assert buy.pair == "ETHUSDT"
-    # BTC current value 7000, target 5000 -> sell 2000 / 50000 = 0.04
+    # SELL is authoritative on quantity: 2000 / 50000 = 0.04, rounded to step.
     assert sell.quantity == _D("0.04")
-    # ETH current value 3000, target 5000 -> buy 2000 / 2500 = 0.8
+    # BUY is authoritative on notional: Binance deducts fees from quoteOrderQty.
+    assert buy.notional == _D("2000")
+    # For BUY, quantity is informational only (2000/2500 = 0.8).
     assert buy.quantity == _D("0.8")
+
+
+def test_compute_trades_buy_notional_not_rounded_to_step_size():
+    """BUYs use quoteOrderQty, so step_size must NOT truncate the buy size.
+
+    Prior implementations rounded buy qty down to step_size then recomputed
+    notional = qty * price, which underspent the intended delta and left the
+    portfolio permanently under-allocated to assets with coarse step sizes.
+    """
+    targets = {"BTC": 1.0}
+    weights = {"BTC": _D("0.5"), "USDT": _D("0.5")}
+    prices = {"BTCUSDT": _D("30000")}
+    # step_size is deliberately coarse.
+    filters = {"BTCUSDT": SymbolFilters(_D("0.001"), _D("0.01"), _D("10"))}
+    trades = compute_trades(
+        total_value=_D("10000"),
+        weights=weights,
+        targets=targets,
+        prices=prices,
+        filters=filters,
+        quote="USDT",
+        max_trade_quote=10_000,
+    )
+    assert len(trades) == 1
+    assert trades[0].side == "BUY"
+    # Full 5000 USDT delta is preserved; no step-size truncation.
+    assert trades[0].notional == _D("5000")
 
 
 def test_compute_trades_respects_max_trade_cap():
@@ -125,9 +154,35 @@ def test_compute_trades_skips_below_min_notional():
     assert trades == []  # both legs would be ~100 USDT notional, below 1000
 
 
-def test_compute_trades_rounds_down_to_step_size():
-    targets = {"BTC": 1.0}  # invalid in config but fine for unit math
-    weights = {"BTC": _D("0.5"), "USDT": _D("0.5")}
+def test_compute_trades_sell_rounds_down_to_step_size():
+    targets = {"BTC": 0.01}  # tiny target → huge sell delta
+    # Currently 100% BTC, need to sell almost all of it.
+    weights = {"BTC": _D("1.0"), "USDT": _D("0")}
+    prices = {"BTCUSDT": _D("30000")}
+    # Coarse step: 0.001 BTC.
+    filters = {"BTCUSDT": SymbolFilters(_D("0.001"), _D("0.01"), _D("10"))}
+    trades = compute_trades(
+        total_value=_D("10000"),
+        weights=weights,
+        targets=targets,
+        prices=prices,
+        filters=filters,
+        quote="USDT",
+        max_trade_quote=10_000,
+    )
+    assert len(trades) == 1
+    assert trades[0].side == "SELL"
+    # delta = 9900 USDT, qty = 9900/30000 = 0.33, already a multiple of 0.001.
+    assert trades[0].quantity == _D("0.33")
+
+
+def test_compute_trades_sell_step_truncation():
+    """Sell quantity must be truncated DOWN to the lot step, never up."""
+    targets = {"BTC": 0.5}
+    # Drift so that delta ≈ -0.0015 BTC (sell side), step 0.001 → qty 0.001.
+    # total 10000, current BTC value 5045, target 5000, delta_value = -45 USDT
+    # qty = 45/30000 = 0.0015, step 0.001 → 0.001. Notional = 30 USDT.
+    weights = {"BTC": _D("0.5045"), "USDT": _D("0.4955")}
     prices = {"BTCUSDT": _D("30000")}
     filters = {"BTCUSDT": SymbolFilters(_D("0.001"), _D("0.01"), _D("10"))}
     trades = compute_trades(
@@ -140,5 +195,5 @@ def test_compute_trades_rounds_down_to_step_size():
         max_trade_quote=10_000,
     )
     assert len(trades) == 1
-    # target 10000 USDT in BTC, currently 5000 -> buy 5000/30000 = 0.16666..., rounded down to 0.166
-    assert trades[0].quantity == _D("0.166")
+    assert trades[0].side == "SELL"
+    assert trades[0].quantity == _D("0.001")

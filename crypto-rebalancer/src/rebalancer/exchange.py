@@ -13,7 +13,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from .portfolio import SymbolFilters
+from .portfolio import SymbolFilters, Trade
 
 log = logging.getLogger(__name__)
 
@@ -82,13 +82,32 @@ class BinanceExchange:
         return result
 
     @retry(**_RETRY)
-    def place_market_order(self, pair: str, side: str, quantity: Decimal) -> dict:
-        """Place a market order. Returns the raw Binance response."""
-        side = side.upper()
-        qty_str = format(quantity.normalize(), "f")
-        log.info("placing %s %s %s (testnet=%s)", side, pair, qty_str, self.testnet)
-        if side == "BUY":
-            return self.client.order_market_buy(symbol=pair, quantity=qty_str)
+    def place_market_order(self, trade: Trade) -> dict:
+        """Place a market order.
+
+        SELL orders size by base-asset quantity (rounded to step_size).
+        BUY orders size by quoteOrderQty so Binance deducts the trading fee
+        from the quote balance we actually have — otherwise buy-after-sell
+        would fail because the 0.1% sell fee reduces available quote.
+        """
+        side = trade.side.upper()
         if side == "SELL":
-            return self.client.order_market_sell(symbol=pair, quantity=qty_str)
+            qty_str = _format_decimal(trade.quantity)
+            log.info("placing SELL %s quantity=%s (testnet=%s)", trade.pair, qty_str, self.testnet)
+            return self.client.order_market_sell(symbol=trade.pair, quantity=qty_str)
+        if side == "BUY":
+            notional_str = _format_decimal(trade.notional)
+            log.info(
+                "placing BUY %s quoteOrderQty=%s (testnet=%s)",
+                trade.pair,
+                notional_str,
+                self.testnet,
+            )
+            return self.client.order_market_buy(symbol=trade.pair, quoteOrderQty=notional_str)
         raise ValueError(f"invalid side {side!r}")
+
+
+def _format_decimal(d: Decimal) -> str:
+    """Render a Decimal in fixed-point form. `normalize()` strips trailing
+    zeros; the `f` format spec avoids scientific notation (e.g. 1E+1 -> 10)."""
+    return format(d.normalize(), "f")

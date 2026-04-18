@@ -10,7 +10,7 @@ from rich.table import Table
 from .config import load_config
 from .exchange import BinanceExchange
 from .logging_conf import setup_logging
-from .rebalancer import tick
+from .rebalancer import DEFAULT_STATE_FILENAME, tick
 from .scheduler import run_forever
 
 app = typer.Typer(add_completion=False, help="Binance Spot portfolio rebalancer.")
@@ -36,30 +36,46 @@ def _build(cfg_path: Path, log_level: str):
         api_secret=cfg.api_secret or "",
         testnet=cfg.use_testnet,
     )
-    return cfg, exchange
+    state_path = cfg_path.parent / DEFAULT_STATE_FILENAME
+    return cfg, exchange, state_path
 
 
 @app.command()
 def run(config: Path = _CFG_OPT, log_level: str = _LOG_OPT) -> None:
     """Start the long-running scheduler loop."""
-    cfg, exchange = _build(config, log_level)
-    run_forever(cfg, exchange)
+    cfg, exchange, state_path = _build(config, log_level)
+    run_forever(cfg, exchange, state_path)
 
 
 @app.command()
 def check(config: Path = _CFG_OPT, log_level: str = _LOG_OPT) -> None:
     """Run a single tick in forced dry-run mode. Never places orders."""
-    cfg, exchange = _build(config, log_level)
-    tick(cfg, exchange, force_dry_run=True)
+    cfg, exchange, state_path = _build(config, log_level)
+    tick(cfg, exchange, state_path=state_path, force_dry_run=True)
 
 
 @app.command()
 def balances(config: Path = _CFG_OPT, log_level: str = _LOG_OPT) -> None:
     """Print free balances and their quote-currency value."""
-    cfg, exchange = _build(config, log_level)
+    cfg, exchange, _ = _build(config, log_level)
     bals = exchange.get_balances()
-    pairs = [f"{s}{cfg.quote}" for s in cfg.asset_symbols]
-    prices = exchange.get_prices(pairs) if pairs else {}
+
+    # Price every non-quote balance, not just the configured targets. Any
+    # coin without a direct pair against the quote shows as unpriced.
+    priceable = sorted({asset for asset in bals if asset != cfg.quote})
+    pairs = [f"{a}{cfg.quote}" for a in priceable]
+    prices: dict[str, Decimal] = {}
+    if pairs:
+        try:
+            prices = exchange.get_prices(pairs)
+        except RuntimeError:
+            # Some held coins may not have a direct {coin}{quote} pair.
+            # Fall back to fetching each one individually.
+            for pair in pairs:
+                try:
+                    prices.update(exchange.get_prices([pair]))
+                except RuntimeError:
+                    pass  # leave unpriced
 
     table = Table(title=f"Balances ({'testnet' if cfg.use_testnet else 'mainnet'})")
     table.add_column("asset")
@@ -69,9 +85,14 @@ def balances(config: Path = _CFG_OPT, log_level: str = _LOG_OPT) -> None:
     for asset, qty in sorted(bals.items()):
         if asset == cfg.quote:
             value = qty
-        else:
-            px = prices.get(f"{asset}{cfg.quote}")
-            value = qty * px if px else Decimal(0)
+            total += value
+            table.add_row(asset, f"{qty}", f"{value:.2f}")
+            continue
+        px = prices.get(f"{asset}{cfg.quote}")
+        if px is None:
+            table.add_row(asset, f"{qty}", "-")
+            continue
+        value = qty * px
         total += value
         table.add_row(asset, f"{qty}", f"{value:.2f}")
     table.add_section()

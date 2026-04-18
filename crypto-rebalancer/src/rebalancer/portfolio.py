@@ -4,6 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 
+# Binance accepts quoteOrderQty with up to 8 decimal places. We quantize to
+# this grid so that buy notionals don't send ambiguous high-precision values.
+_NOTIONAL_QUANT = Decimal("0.00000001")
+
 
 @dataclass(frozen=True)
 class SymbolFilters:
@@ -18,8 +22,8 @@ class Trade:
     symbol: str            # base asset (e.g. "BTC")
     pair: str              # trading pair (e.g. "BTCUSDT")
     side: str              # "BUY" or "SELL"
-    quantity: Decimal      # in base asset, rounded to step_size
-    notional: Decimal      # in quote, informational
+    quantity: Decimal      # base asset amount. Authoritative for SELL; estimate for BUY.
+    notional: Decimal      # quote amount. Authoritative for BUY (quoteOrderQty); estimate for SELL.
 
 
 def compute_weights(
@@ -103,12 +107,23 @@ def compute_trades(
             continue
 
         side = "BUY" if delta_value > 0 else "SELL"
-        qty = abs(delta_value) / price
-        qty = _round_down(qty, filt.step_size)
+        abs_delta = abs(delta_value)
 
-        notional = qty * price
-        if qty <= 0 or notional < filt.min_notional:
-            continue
+        if side == "SELL":
+            # Sell: size by base-asset quantity; must round down to step_size.
+            qty = _round_down(abs_delta / price, filt.step_size)
+            notional = qty * price
+            if qty <= 0 or notional < filt.min_notional:
+                continue
+        else:
+            # Buy: size by quote-asset notional. Using quoteOrderQty lets
+            # Binance deduct trading fees correctly and avoids insufficient-
+            # funds errors that arise when a prior sell's fee reduces the
+            # available quote balance below the planned notional.
+            notional = abs_delta.quantize(_NOTIONAL_QUANT)
+            if notional < filt.min_notional:
+                continue
+            qty = notional / price  # informational estimate; not sent to Binance
 
         trade = Trade(symbol=sym, pair=pair, side=side, quantity=qty, notional=notional)
         (buys if side == "BUY" else sells).append(trade)
